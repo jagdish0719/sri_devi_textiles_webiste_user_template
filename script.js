@@ -368,7 +368,14 @@ async function migrateDataAsync() {
 }
 
 function getProductReviews(productId) {
-  return getReviews().filter(r => !productId || r.productId === productId);
+  return getPublicReviews(productId);
+}
+
+function getPublicReviews(productId) {
+  return getReviews().filter(r =>
+    (!productId || r.productId === productId) &&
+    (r.status === 'approved' || !r.status)
+  );
 }
 
 function getProductRating(productId) {
@@ -649,6 +656,7 @@ function seedWomenReviews() {
       rating: 4 + (i % 2),
       text: `Beautiful ${p.name.split(' ')[0]} quality! Exactly as shown. Highly recommend Sri Devi Textiles.`,
       productId: p.id,
+      status: 'approved',
       createdAt: Date.now() - i * 86400000
     });
   });
@@ -804,37 +812,101 @@ function filterByDateRange(items, range, dateField = 'createdAt') {
   return items.filter(i => i[dateField] >= range.start && i[dateField] <= range.end);
 }
 
-function generateDemoOrders(range) {
-  const names = ['Priya Sharma', 'Surya Kumar', 'Vishnu Reddy', 'Vijay Mehta', 'Ananya Nair'];
-  const count = Math.max(3, Math.floor((range.end - range.start) / 86400000));
-  return Array.from({ length: Math.min(count, 12) }, (_, i) => ({
-    id: `DEMO-ORD-${i}`, name: names[i % names.length], email: `customer${i}@email.com`,
-    total: 1299 + (i * 437), status: i % 3 === 0 ? 'pending' : 'paid',
-    createdAt: range.start + (i * 86400000 * 2), items: [{ qty: 1 }]
-  }));
+function calcGrowthPct(current, previous) {
+  if (!previous) return current ? 100 : 0;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+function getPreviousDateRange(rangeKey, customStart, customEnd) {
+  const range = getDateRange(rangeKey, customStart, customEnd);
+  const span = range.end - range.start + 1;
+  return { start: range.start - span, end: range.start - 1 };
 }
 
 function getAnalytics(rangeKey, customStart, customEnd) {
   const range = getDateRange(rangeKey, customStart, customEnd);
-  let orders = filterByDateRange(getOrders(), range);
-  if (!orders.length) orders = generateDemoOrders(range);
-  const revenue = orders.reduce((s, o) => s + o.total, 0);
+  const prevRange = getPreviousDateRange(rangeKey, customStart, customEnd);
+  const allOrders = getOrders();
+  const orders = filterByDateRange(allOrders, range);
+  const prevOrders = filterByDateRange(allOrders, prevRange);
   const products = getProducts();
   const customers = sdGet(SD_KEYS.customers, []);
-  const reviews = filterByDateRange(getReviews(), range);
-  const pending = orders.filter(o => o.status === 'pending').length;
+  const allReviews = getReviews();
+  const reviews = filterByDateRange(allReviews, range);
+  const wishlist = getWishlist();
+  const cart = getCart();
+
+  const revenue = orders.reduce((s, o) => s + (o.total || 0), 0);
+  const prevRevenue = prevOrders.reduce((s, o) => s + (o.total || 0), 0);
+  const allRevenue = allOrders.reduce((s, o) => s + (o.total || 0), 0);
+  const pending = allOrders.filter(o => o.status === 'pending').length;
+  const completed = allOrders.filter(o => o.status === 'paid' || o.status === 'completed').length;
+  const cancelled = allOrders.filter(o => o.status === 'cancelled').length;
+  const activeProducts = products.filter(p => p.status === 'active').length;
+  const outOfStock = products.filter(p => p.status === 'out_of_stock' || (p.stock || 0) <= 0).length;
+  const lowStock = products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= 5).length;
   const avgOrder = orders.length ? revenue / orders.length : 0;
-  const topCat = products.length ? products.reduce((a, b) => (products.filter(p => p.category === a).length >= products.filter(p => p.category === b.category).length ? a : b.category), products[0].category) : 'Women';
-  const lowStock = products.filter(p => p.stock <= 5).length;
+
+  const todayRange = getDateRange('today');
+  const todayOrders = filterByDateRange(allOrders, todayRange);
+  const todaySales = todayOrders.reduce((s, o) => s + (o.total || 0), 0);
+  const weeklySales = filterByDateRange(allOrders, getDateRange('last7')).reduce((s, o) => s + (o.total || 0), 0);
+  const monthlySales = filterByDateRange(allOrders, getDateRange('this_month')).reduce((s, o) => s + (o.total || 0), 0);
+
+  const catCounts = {};
+  products.forEach(p => {
+    const cat = p.category || 'other';
+    catCounts[cat] = (catCounts[cat] || 0) + 1;
+  });
+  const topCategory = Object.keys(catCounts).sort((a, b) => catCounts[b] - catCounts[a])[0] || '—';
+
+  const productSales = {};
+  allOrders.filter(o => o.status !== 'cancelled').forEach(o => {
+    (o.items || []).forEach(item => {
+      const id = item.productId || item.id;
+      if (!id) return;
+      productSales[id] = (productSales[id] || 0) + (item.qty || 1);
+    });
+  });
+  const topProductId = Object.keys(productSales).sort((a, b) => productSales[b] - productSales[a])[0];
+  const topProduct = topProductId ? (getProductById(topProductId)?.name || '—') : (products[0]?.name || '—');
+
+  const prevCustomers = customers.filter(c => (c.createdAt || 0) <= prevRange.end).length;
+
   return {
-    totalProducts: products.length, totalOrders: orders.length,
-    totalCustomers: Math.max(customers.length, orders.length),
-    totalRevenue: revenue, todaySales: orders.filter(o => o.createdAt >= getDateRange('today').start).reduce((s,o)=>s+o.total,0),
-    weeklySales: filterByDateRange(orders, getDateRange('last7')).reduce((s,o)=>s+o.total,0),
-    monthlySales: revenue, avgOrderValue: avgOrder, pendingOrders: pending,
-    lowStock, topCategory: topCat, topProduct: products[0]?.name || 'Silk Saree',
-    orders, reviews: reviews.length ? reviews : getReviews().slice(0, 5),
-    growth: { products: 12, orders: 18, customers: 15, revenue: 20 }
+    totalProducts: products.length,
+    activeProducts,
+    outOfStock,
+    totalOrders: orders.length,
+    allOrdersCount: allOrders.length,
+    totalCustomers: customers.length,
+    totalRevenue: revenue,
+    allRevenue,
+    todaySales,
+    weeklySales,
+    monthlySales,
+    avgOrderValue: avgOrder,
+    pendingOrders: pending,
+    completedOrders: completed,
+    cancelledOrders: cancelled,
+    todayOrdersCount: todayOrders.length,
+    lowStock,
+    topCategory,
+    topProduct,
+    wishlistCount: wishlist.length,
+    cartCount: cart.reduce((s, i) => s + (i.qty || 1), 0),
+    totalReviews: allReviews.length,
+    approvedReviews: allReviews.filter(r => r.status === 'approved' || !r.status).length,
+    orders,
+    allOrders: [...allOrders].sort((a, b) => b.createdAt - a.createdAt),
+    reviews,
+    allReviews: [...allReviews].sort((a, b) => b.createdAt - a.createdAt),
+    growth: {
+      products: calcGrowthPct(products.length, products.length),
+      orders: calcGrowthPct(orders.length, prevOrders.length),
+      customers: calcGrowthPct(customers.length, prevCustomers),
+      revenue: calcGrowthPct(revenue, prevRevenue)
+    }
   };
 }
 
@@ -1031,10 +1103,10 @@ async function seedInitialData() {
 
   const sampleProducts = getProducts();
   const sampleReviews = [
-    { id: sdGenerateId('REV'), name: 'Priya Sharma', rating: 5, text: 'Absolutely stunning saree! The quality exceeded my expectations. Sri Devi Textiles is my go-to now.', productId: sampleProducts[0].id, createdAt: Date.now() - 86400000 * 10 },
-    { id: sdGenerateId('REV'), name: 'Ananya Reddy', rating: 5, text: 'The Kanjivaram silk is authentic and beautifully crafted. Fast delivery and elegant packaging.', productId: sampleProducts[1].id, createdAt: Date.now() - 86400000 * 7 },
-    { id: sdGenerateId('REV'), name: 'Rahul Mehta', rating: 4, text: 'Premium kurta set with perfect fit. Great value for the price. Highly recommended!', productId: sampleProducts[2].id, createdAt: Date.now() - 86400000 * 5 },
-    { id: sdGenerateId('REV'), name: 'Kavitha Nair', rating: 5, text: 'The jewellery set is gorgeous! Received so many compliments at the wedding.', productId: sampleProducts[5].id, createdAt: Date.now() - 86400000 * 3 }
+    { id: sdGenerateId('REV'), name: 'Priya Sharma', rating: 5, text: 'Absolutely stunning saree! The quality exceeded my expectations. Sri Devi Textiles is my go-to now.', productId: sampleProducts[0].id, status: 'approved', createdAt: Date.now() - 86400000 * 10 },
+    { id: sdGenerateId('REV'), name: 'Ananya Reddy', rating: 5, text: 'The Kanjivaram silk is authentic and beautifully crafted. Fast delivery and elegant packaging.', productId: sampleProducts[1].id, status: 'approved', createdAt: Date.now() - 86400000 * 7 },
+    { id: sdGenerateId('REV'), name: 'Rahul Mehta', rating: 4, text: 'Premium kurta set with perfect fit. Great value for the price. Highly recommended!', productId: sampleProducts[2].id, status: 'approved', createdAt: Date.now() - 86400000 * 5 },
+    { id: sdGenerateId('REV'), name: 'Kavitha Nair', rating: 5, text: 'The jewellery set is gorgeous! Received so many compliments at the wedding.', productId: sampleProducts[5].id, status: 'approved', createdAt: Date.now() - 86400000 * 3 }
   ];
 
   sdSet(SD_KEYS.orders, []);
@@ -1092,6 +1164,18 @@ async function initProductStore() {
 
   await seedInitialData();
   await migrateDataAsync();
+  subscribeProductUpdates();
+}
+
+function subscribeProductUpdates() {
+  if (!window.sdFirestore || window._sdProductUnsub) return;
+  window._sdProductUnsub = getFirestoreProductsCollection().onSnapshot(
+    (snap) => {
+      productsCache = snap.docs.map(doc => normalizeProduct({ ...doc.data(), id: doc.id }));
+      notifyProductsUpdated();
+    },
+    (err) => console.warn('[Sri Devi] Product realtime sync error:', err)
+  );
 }
 
 function getProducts() {
@@ -1179,22 +1263,79 @@ function saveOrder(order) {
   return order;
 }
 
+function getOrderById(id) {
+  return getOrders().find(o => o.id === id);
+}
+
+function updateOrderStatus(orderId, newStatus) {
+  const orders = getOrders();
+  const idx = orders.findIndex(o => o.id === orderId);
+  if (idx < 0) return null;
+  const order = orders[idx];
+  const oldStatus = order.status;
+  if (oldStatus === newStatus) return order;
+  order.status = newStatus;
+  orders[idx] = order;
+  sdSet(SD_KEYS.orders, orders);
+  if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
+    adjustStockFromOrder(order, 'restore');
+  } else if (oldStatus === 'cancelled' && newStatus !== 'cancelled') {
+    adjustStockFromOrder(order, 'reduce');
+  }
+  return order;
+}
+
+async function adjustStockFromOrder(order, mode) {
+  const sign = mode === 'restore' ? 1 : -1;
+  const products = getProducts().map(p => ({ ...p }));
+  let changed = false;
+  (order.items || []).forEach(item => {
+    const idx = products.findIndex(pr => pr.id === item.productId);
+    if (idx < 0) return;
+    const qty = item.qty || 1;
+    products[idx].stock = Math.max(0, (products[idx].stock || 0) + sign * qty);
+    if (products[idx].stock <= 0) products[idx].status = 'out_of_stock';
+    else if (products[idx].status === 'out_of_stock') products[idx].status = 'active';
+    changed = true;
+  });
+  if (changed) await saveProducts(products);
+}
+
 function updateCustomersFromOrder(order) {
   const customers = sdGet(SD_KEYS.customers, []);
-  const existing = customers.find(c => c.email === order.email);
+  const emailKey = (order.email || '').toLowerCase().trim();
+  const phoneKey = (order.phone || '').trim();
+  const existing = customers.find(c =>
+    (emailKey && c.email && c.email.toLowerCase() === emailKey) ||
+    (phoneKey && c.phone && c.phone === phoneKey)
+  );
   if (existing) {
     existing.orders = (existing.orders || 0) + 1;
-    existing.totalSpent = (existing.totalSpent || 0) + order.total;
+    existing.totalSpent = (existing.totalSpent || 0) + (order.total || 0);
     existing.lastOrder = order.createdAt;
+    existing.name = order.name || existing.name;
+    existing.phone = order.phone || existing.phone;
+    existing.email = order.email || existing.email;
+    existing.address = order.address || existing.address;
+    existing.city = order.city || existing.city;
+    existing.state = order.state || existing.state;
+    existing.pincode = order.pincode || existing.pincode;
+    existing.status = (existing.orders || 0) > 1 ? 'returning' : (existing.status || 'active');
   } else {
     customers.push({
       id: sdGenerateId('CUS'),
       name: order.name,
-      email: order.email,
-      phone: order.phone,
+      email: order.email || '',
+      phone: order.phone || '',
+      address: order.address || '',
+      city: order.city || '',
+      state: order.state || '',
+      pincode: order.pincode || '',
       orders: 1,
-      totalSpent: order.total,
-      lastOrder: order.createdAt
+      totalSpent: order.total || 0,
+      lastOrder: order.createdAt,
+      status: 'new',
+      createdAt: Date.now()
     });
   }
   sdSet(SD_KEYS.customers, customers);
@@ -1375,7 +1516,19 @@ function getReviews() {
 
 function addReview(review) {
   const reviews = getReviews();
-  reviews.unshift({ ...review, id: sdGenerateId('REV'), createdAt: Date.now() });
+  const status = review.status || (review.fromAdmin ? 'approved' : 'pending');
+  reviews.unshift({
+    ...review,
+    id: sdGenerateId('REV'),
+    status,
+    createdAt: Date.now()
+  });
+  sdSet(SD_KEYS.reviews, reviews);
+  return reviews;
+}
+
+function updateReviewStatus(id, status) {
+  const reviews = getReviews().map(r => r.id === id ? { ...r, status } : r);
   sdSet(SD_KEYS.reviews, reviews);
   return reviews;
 }
@@ -1402,17 +1555,20 @@ function adminLogout() {
 }
 
 /* ── Dashboard Stats ── */
-function getDashboardStats() {
-  const products = getProducts();
-  const orders = getOrders();
-  const customers = sdGet(SD_KEYS.customers, []);
-  const revenue = orders.reduce((s, o) => s + (o.total || 0), 0);
-  return {
-    totalProducts: products.length,
-    totalOrders: orders.length,
-    totalCustomers: customers.length,
-    totalRevenue: revenue
-  };
+function getSettings() {
+  return sdGet(SD_KEYS.settings, {
+    storeName: 'Sri Devi Textiles',
+    tagline: 'Traditional & Modern Collection',
+    email: 'info@sridevtextiles.com',
+    phone: '+91 98765 43210',
+    address: '123 Silk Market, T. Nagar, Chennai - 600017',
+    freeShippingThreshold: 999,
+    returnDays: 7
+  });
+}
+
+function saveSettings(settings) {
+  sdSet(SD_KEYS.settings, settings);
 }
 
 /* ── EmailJS (Dummy Integration) ── */
@@ -2063,10 +2219,13 @@ const UserApp = {
     initImageFallbacks(document.getElementById('page-home'));
   },
 
-  renderReviews(containerId) {
+  renderReviews(containerId, productId = null) {
     const container = document.getElementById(containerId);
     if (!container) return;
-    const reviews = getReviews().slice(0, 6);
+    const pid = productId || (containerId === 'product-reviews'
+      ? (location.hash.split('/')[1] || this.selectedProduct?.id)
+      : null);
+    const reviews = getPublicReviews(pid).slice(0, 6);
     container.innerHTML = reviews.length
       ? reviews.map(r => `
         <div class="review-card reveal">
@@ -2392,20 +2551,13 @@ const UserApp = {
         ...orderData,
         paymentId: payment?.razorpay_payment_id || `COD-${Date.now()}`,
         invoiceNumber: payment?.invoiceNumber || `INV-${Date.now().toString().slice(-8)}`,
+        paymentMethod,
+        paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
         status: paymentMethod === 'cod' ? 'pending' : 'paid',
         createdAt: Date.now()
       };
       saveOrder(order);
-
-      const products = getProducts();
-      items.forEach(item => {
-        const idx = products.findIndex(pr => pr.id === item.productId);
-        if (idx >= 0) {
-          products[idx].stock = Math.max(0, products[idx].stock - item.qty);
-          if (products[idx].stock <= 0) products[idx].status = 'out_of_stock';
-        }
-      });
-      await saveProducts(products);
+      await adjustStockFromOrder(order, 'reduce');
 
       if (CartManager.isBuyNowSession()) {
         CartManager.clearCheckoutSession();
@@ -2469,7 +2621,7 @@ const UserApp = {
       text: form.text.value,
       productId: form.productId?.value || ''
     });
-    showToast('Thank you for your review!');
+    showToast('Thank you! Your review will appear after approval.');
     form.reset();
     this.renderReviews('home-reviews');
     if (this.currentPage === 'product') this.renderReviews('product-reviews');
@@ -2684,7 +2836,7 @@ const AdminApp = {
     document.getElementById('admin-review-form')?.addEventListener('submit', (e) => {
       e.preventDefault();
       const f = e.target;
-      addReview({ name: f.name.value, rating: parseInt(f.rating.value), text: f.text.value, productId: f.productId.value });
+      addReview({ name: f.name.value, rating: parseInt(f.rating.value), text: f.text.value, productId: f.productId.value, fromAdmin: true });
       document.getElementById('review-modal').classList.remove('open');
       f.reset();
       this.renderReviewsTable();
@@ -2694,6 +2846,23 @@ const AdminApp = {
     document.getElementById('close-review-modal')?.addEventListener('click', () => {
       document.getElementById('review-modal').classList.remove('open');
     });
+
+    const settingsSaveBtn = document.querySelector('#view-settings .btn-red');
+    if (settingsSaveBtn) {
+      settingsSaveBtn.onclick = () => {
+        const form = document.querySelector('#view-settings .settings-form');
+        if (!form) return;
+        const fields = form.querySelectorAll('input, textarea');
+        const settings = getSettings();
+        if (fields[2]) settings.email = fields[2].value;
+        if (fields[3]) settings.phone = fields[3].value;
+        if (fields[4]) settings.address = fields[4].value;
+        if (fields[5]) settings.freeShippingThreshold = parseInt(fields[5].value) || 999;
+        if (fields[6]) settings.returnDays = parseInt(fields[6].value) || 7;
+        saveSettings(settings);
+        showToast('Settings saved');
+      };
+    }
   },
 
   showLogin() {
@@ -2720,8 +2889,22 @@ const AdminApp = {
       case 'orders': this.renderOrdersTable(); break;
       case 'reviews': this.renderReviewsTable(); break;
       case 'customers': this.renderCustomersTable(); break;
-      case 'settings': break;
+      case 'settings': this.renderSettings(); break;
     }
+  },
+
+  renderSettings() {
+    const s = getSettings();
+    const form = document.querySelector('#view-settings .settings-form');
+    if (!form) return;
+    const fields = form.querySelectorAll('input, textarea');
+    if (fields[0]) fields[0].value = s.storeName || '';
+    if (fields[1]) fields[1].value = s.tagline || '';
+    if (fields[2]) fields[2].value = s.email || '';
+    if (fields[3]) fields[3].value = s.phone || '';
+    if (fields[4]) fields[4].value = s.address || '';
+    if (fields[5]) fields[5].value = s.freeShippingThreshold || 999;
+    if (fields[6]) fields[6].value = s.returnDays || 7;
   },
 
   refreshView() {
@@ -2736,10 +2919,14 @@ const AdminApp = {
     document.getElementById('stat-customers').textContent = stats.totalCustomers;
     document.getElementById('stat-revenue').textContent = formatCurrency(stats.totalRevenue);
 
-    const growth = (base) => `<span class="stat-growth">↑ ${base}%</span>`;
+    const growthHTML = (pct) => {
+      if (!pct) return '<span class="stat-growth">—</span>';
+      const sign = pct > 0 ? '↑' : '↓';
+      return `<span class="stat-growth">${sign} ${Math.abs(pct)}%</span>`;
+    };
     ['stat-products-growth', 'stat-orders-growth', 'stat-customers-growth', 'stat-revenue-growth'].forEach((id, i) => {
       const el = document.getElementById(id);
-      if (el) el.innerHTML = growth(Object.values(stats.growth)[i]);
+      if (el) el.innerHTML = growthHTML(Object.values(stats.growth)[i]);
     });
 
     const extra = document.getElementById('dashboard-extra-stats');
@@ -2749,12 +2936,18 @@ const AdminApp = {
         <div class="stat-mini"><span>Weekly Sales</span><strong>${formatCurrency(stats.weeklySales)}</strong></div>
         <div class="stat-mini"><span>Avg Order</span><strong>${formatCurrency(stats.avgOrderValue)}</strong></div>
         <div class="stat-mini"><span>Pending Orders</span><strong>${stats.pendingOrders}</strong></div>
+        <div class="stat-mini"><span>Today's Orders</span><strong>${stats.todayOrdersCount}</strong></div>
+        <div class="stat-mini"><span>Active Products</span><strong>${stats.activeProducts}</strong></div>
         <div class="stat-mini"><span>Low Stock</span><strong>${stats.lowStock} items</strong></div>
+        <div class="stat-mini"><span>Out of Stock</span><strong>${stats.outOfStock}</strong></div>
+        <div class="stat-mini"><span>Reviews</span><strong>${stats.approvedReviews}</strong></div>
+        <div class="stat-mini"><span>Wishlist</span><strong>${stats.wishlistCount}</strong></div>
+        <div class="stat-mini"><span>Cart Items</span><strong>${stats.cartCount}</strong></div>
         <div class="stat-mini"><span>Top Category</span><strong>${stats.topCategory}</strong></div>`;
     }
 
-    this.renderRevenueChart(stats.orders);
-    this.renderRecentOrders(stats.orders);
+    this.renderRevenueChart(stats.allOrders);
+    this.renderRecentOrders(stats.allOrders);
     this.renderRecentProducts();
   },
 
@@ -2806,24 +2999,28 @@ const AdminApp = {
   renderRecentOrders(orders) {
     const list = (orders || getOrders()).slice(0, 5);
     const tbody = document.getElementById('recent-orders-body');
+    if (!tbody) return;
     tbody.innerHTML = list.length
-      ? list.map(o => `<tr><td>${o.id}</td><td>${o.name}</td><td>${formatCurrency(o.total)}</td><td><span class="status-badge paid">${o.status}</span></td><td>${new Date(o.createdAt).toLocaleDateString('en-IN')}</td></tr>`).join('')
-      : '<tr><td colspan="5" class="empty-cell">No orders in this period</td></tr>';
+      ? list.map(o => `<tr><td>${o.id}</td><td>${o.name}</td><td>${formatCurrency(o.total)}</td><td><span class="status-badge ${o.status === 'paid' || o.status === 'completed' ? 'paid' : 'inactive'}">${o.status}</span></td><td>${new Date(o.createdAt).toLocaleDateString('en-IN')}</td></tr>`).join('')
+      : '<tr><td colspan="5" class="empty-cell">No orders yet</td></tr>';
   },
 
   renderCustomersTable() {
-    const customers = sdGet(SD_KEYS.customers, []);
-    const analytics = getAnalytics(this.dateFilter, this.customStart, this.customEnd);
+    const customers = sdGet(SD_KEYS.customers, []).sort((a, b) => (b.lastOrder || 0) - (a.lastOrder || 0));
     const tbody = document.getElementById('customers-table-body');
     if (!tbody) return;
-    const list = customers.length ? customers : analytics.orders.map((o, i) => ({
-      name: o.name, email: o.email, orders: 1, totalSpent: o.total, lastOrder: o.createdAt
-    }));
-    tbody.innerHTML = list.map(c => `
-      <tr><td>${c.name}</td><td>${c.email || '—'}</td><td>${c.orders || 1}</td><td>${formatCurrency(c.totalSpent || 0)}</td><td>${c.lastOrder ? new Date(c.lastOrder).toLocaleDateString('en-IN') : '—'}</td></tr>`
-    ).join('') || '<tr><td colspan="5" class="empty-cell">No customers yet</td></tr>';
+    tbody.innerHTML = customers.length
+      ? customers.map(c => `
+      <tr>
+        <td>${c.name}</td>
+        <td>${c.email || '—'}</td>
+        <td>${c.orders || 0}</td>
+        <td>${formatCurrency(c.totalSpent || 0)}</td>
+        <td>${c.lastOrder ? new Date(c.lastOrder).toLocaleDateString('en-IN') : '—'}</td>
+      </tr>`).join('')
+      : '<tr><td colspan="5" class="empty-cell">No customers yet</td></tr>';
     const summary = document.getElementById('customers-summary');
-    if (summary) summary.textContent = `${list.length} customers · ${formatCurrency(list.reduce((s,c)=>s+(c.totalSpent||0),0))} total spent`;
+    if (summary) summary.textContent = `${customers.length} customers · ${formatCurrency(customers.reduce((s, c) => s + (c.totalSpent || 0), 0))} total spent`;
   },
 
   renderRecentProducts() {
@@ -2938,31 +3135,77 @@ const AdminApp = {
           <td>${o.email || '—'}</td>
           <td>${o.items?.length || 1} items</td>
           <td>${formatCurrency(o.total)}</td>
-          <td><span class="status-badge ${o.status === 'paid' ? 'paid' : 'inactive'}">${o.status}</span></td>
+          <td>
+            <select class="order-status-select" data-id="${o.id}" aria-label="Order status">
+              ${['pending', 'paid', 'completed', 'cancelled'].map(s =>
+                `<option value="${s}" ${o.status === s ? 'selected' : ''}>${s}</option>`
+              ).join('')}
+            </select>
+          </td>
           <td>${new Date(o.createdAt).toLocaleString('en-IN')}</td>
         </tr>`).join('')
       : '<tr><td colspan="7" class="empty-cell">No orders in this period</td></tr>';
+
+    tbody.querySelectorAll('.order-status-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const prev = getOrderById(sel.dataset.id)?.status;
+        try {
+          updateOrderStatus(sel.dataset.id, sel.value);
+          if (sel.value === 'cancelled' && prev !== 'cancelled') showToast('Order cancelled — stock restored');
+          else if (prev === 'cancelled' && sel.value !== 'cancelled') showToast('Order reactivated — stock adjusted');
+          else showToast('Order status updated');
+          this.renderOrdersTable();
+          if (this.currentView === 'dashboard') this.renderDashboard();
+        } catch (err) {
+          console.error(err);
+          showToast('Failed to update order', 'error');
+        }
+      });
+    });
   },
 
   renderReviewsTable() {
     const stats = getAnalytics(this.dateFilter, this.customStart, this.customEnd);
-    const reviews = stats.reviews;
+    const reviews = stats.allReviews;
     const tbody = document.getElementById('reviews-table-body');
     const summary = document.getElementById('reviews-period-summary');
-    if (summary) summary.textContent = `${reviews.length} reviews in selected period · Average sentiment: Excellent`;
-    tbody.innerHTML = reviews.map(r => `
+    if (summary) summary.textContent = `${stats.totalReviews} total · ${stats.approvedReviews} approved · ${stats.reviews.length} in selected period`;
+    tbody.innerHTML = reviews.length
+      ? reviews.map(r => `
       <tr>
         <td>${r.name}</td>
         <td>${renderStars(r.rating)}</td>
         <td>${r.text.substring(0, 80)}${r.text.length > 80 ? '...' : ''}</td>
         <td>${new Date(r.createdAt).toLocaleDateString('en-IN')}</td>
-        <td><button class="btn-icon delete-review" data-id="${r.id}">🗑</button></td>
-      </tr>`).join('');
+        <td>
+          <span class="status-badge ${r.status === 'approved' || !r.status ? 'paid' : 'inactive'}">${r.status || 'approved'}</span>
+          ${r.status === 'pending' ? `<button type="button" class="btn-icon approve-review" data-id="${r.id}" title="Approve">✓</button>` : ''}
+          ${r.status === 'pending' ? `<button type="button" class="btn-icon reject-review" data-id="${r.id}" title="Reject">✕</button>` : ''}
+          <button type="button" class="btn-icon delete-review" data-id="${r.id}" title="Delete">🗑</button>
+        </td>
+      </tr>`).join('')
+      : '<tr><td colspan="5" class="empty-cell">No reviews yet</td></tr>';
 
+    tbody.querySelectorAll('.approve-review').forEach(btn => {
+      btn.addEventListener('click', () => {
+        updateReviewStatus(btn.dataset.id, 'approved');
+        this.renderReviewsTable();
+        if (this.currentView === 'dashboard') this.renderDashboard();
+        showToast('Review approved — visible on user site');
+      });
+    });
+    tbody.querySelectorAll('.reject-review').forEach(btn => {
+      btn.addEventListener('click', () => {
+        updateReviewStatus(btn.dataset.id, 'rejected');
+        this.renderReviewsTable();
+        showToast('Review rejected');
+      });
+    });
     tbody.querySelectorAll('.delete-review').forEach(btn => {
       btn.addEventListener('click', () => {
         deleteReview(btn.dataset.id);
         this.renderReviewsTable();
+        if (this.currentView === 'dashboard') this.renderDashboard();
         showToast('Review deleted');
       });
     });
@@ -2988,9 +3231,11 @@ const AdminApp = {
       form.fabric.value = p.attributes?.fabric || '';
       form.occasion.value = p.attributes?.occasion || '';
       this.variantDraft = JSON.parse(JSON.stringify(p.variants));
-      form.images.value = p.images.join('\n');
+      const variantImgs = new Set(p.variants.flatMap(v => v.images || []));
+      const extraGallery = (p.galleryImages || p.images || []).filter(img => !variantImgs.has(img));
+      form.images.value = extraGallery.join('\n');
       this.renderVariantEditor();
-      this.previewProductImages(p.images);
+      this.previewProductImages(extraGallery.length ? extraGallery : p.images);
     } else {
       document.getElementById('image-preview-grid').innerHTML = '';
       document.getElementById('variants-editor').innerHTML = '';
@@ -3019,7 +3264,7 @@ const AdminApp = {
           <button type="button" class="btn-icon remove-variant" data-vi="${vi}">🗑</button>
         </div>
         <div class="variant-images" id="variant-imgs-${vi}">${v.images.map((img, j) => `<div class="img-preview-item"><img src="${img}"><button type="button" class="remove-vimg" data-vi="${vi}" data-ji="${j}">✕</button></div>`).join('')}</div>
-        <input type="file" multiple accept="image/*" class="variant-file-input" data-vi="${vi}">
+        <input type="file" accept="image/*" class="variant-file-input" data-vi="${vi}">
         <textarea class="variant-url-input" rows="2" placeholder="Or paste image URLs" data-vi="${vi}">${v.images.filter(i => !i.startsWith('data:')).join('\n')}</textarea>
         <div class="variant-sizes">${v.sizes.map((sz, si) => `
           <div class="size-row"><input value="${sz.size}" data-vi="${vi}" data-si="${si}" class="sz-name" placeholder="Size">
@@ -3052,12 +3297,18 @@ const AdminApp = {
 
   async handleVariantImageUpload(e, vi) {
     const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const newImages = [];
     for (const file of files) {
       try {
-        const data = await compressImage(file);
-        this.variantDraft[vi].images.push(data);
-      } catch { showToast('Image upload failed', 'error'); }
+        newImages.push(await compressImage(file));
+      } catch {
+        showToast('Image upload failed', 'error');
+        return;
+      }
     }
+    this.variantDraft[vi].images = newImages;
+    e.target.value = '';
     this.renderVariantEditor();
   },
 
@@ -3079,18 +3330,26 @@ const AdminApp = {
       const vi = Number(block.dataset.vi);
       const colorInp = block.querySelector('.variant-color-input');
       if (colorInp) this.variantDraft[vi].color = colorInp.value;
+
+      const imgsContainer = block.querySelector('.variant-images');
+      const domImages = imgsContainer
+        ? [...imgsContainer.querySelectorAll('img')].map(img => img.getAttribute('src')).filter(Boolean)
+        : [];
       const urlTa = block.querySelector('.variant-url-input');
-      if (urlTa) {
-        const urls = urlTa.value.split('\n').map(s => s.trim()).filter(Boolean);
-        const existing = this.variantDraft[vi].images.filter(i => i.startsWith('data:'));
-        this.variantDraft[vi].images = [...existing, ...urls];
+      const urlImages = urlTa ? urlTa.value.split('\n').map(s => s.trim()).filter(Boolean) : [];
+      if (urlImages.length) {
+        this.variantDraft[vi].images = urlImages;
+      } else if (domImages.length) {
+        this.variantDraft[vi].images = domImages;
       }
+
       block.querySelectorAll('.size-row').forEach((row, si) => {
+        const prev = this.variantDraft[vi].sizes[si] || {};
         this.variantDraft[vi].sizes[si] = {
           size: row.querySelector('.sz-name')?.value || 'M',
           stock: parseInt(row.querySelector('.sz-stock')?.value) || 0,
           sku: row.querySelector('.sz-sku')?.value || '',
-          priceAdjust: 0
+          priceAdjust: prev.priceAdjust || 0
         };
       });
     });
@@ -3122,14 +3381,18 @@ const AdminApp = {
       image: safeImg(v.images[0]),
       images: v.images
     }));
-    const allImages = [...new Set(variants.flatMap(v => v.images).concat(
-      form.images.value.split('\n').map(s => s.trim()).filter(Boolean)
-    ))].map(safeImg);
+    const galleryUrls = form.images.value.split('\n').map(s => s.trim()).filter(Boolean);
+    const allImages = [...new Set([
+      ...variants.flatMap(v => v.images),
+      ...galleryUrls
+    ])].map(safeImg);
     const allSizes = [...new Set(variants.flatMap(v => v.sizes.map(s => s.size)))];
     const totalStock = variants.reduce((s, v) => s + v.sizes.reduce((a, sz) => a + sz.stock, 0), 0);
     const badge = form.badge.value;
     let category = normalizeCategory(form.category.value);
     if (badge === 'signature') category = 'signature';
+
+    const existing = this.editingProductId ? getProductById(this.editingProductId) : null;
     const product = {
       name: form.name.value,
       category,
@@ -3148,11 +3411,18 @@ const AdminApp = {
       featured: badge === 'featured',
       signatureSaree: badge === 'signature',
       status: form.status.value,
+      createdAt: existing?.createdAt || Date.now(),
       attributes: {
-        fabric: form.fabric?.value || 'Premium Fabric',
-        occasion: form.occasion?.value || 'Festive',
-        pattern: 'Traditional', workType: 'Handcrafted', care: 'Dry Clean Only',
-        origin: 'India', brand: 'Sri Devi Textiles', dispatch: '2-4 Days', returns: '7 Days'
+        ...(existing?.attributes || {}),
+        fabric: form.fabric?.value || existing?.attributes?.fabric || 'Premium Fabric',
+        occasion: form.occasion?.value || existing?.attributes?.occasion || 'Festive',
+        pattern: existing?.attributes?.pattern || 'Traditional',
+        workType: existing?.attributes?.workType || 'Handcrafted',
+        care: existing?.attributes?.care || 'Dry Clean Only',
+        origin: existing?.attributes?.origin || 'India',
+        brand: existing?.attributes?.brand || 'Sri Devi Textiles',
+        dispatch: existing?.attributes?.dispatch || '2-4 Days',
+        returns: existing?.attributes?.returns || '7 Days'
       }
     };
 
