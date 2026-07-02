@@ -6,6 +6,7 @@
   <title>Sri Devi Textiles — Traditional & Modern Collection</title>
   <meta name="description" content="Premium ethnic wear, sarees, kurtas, kids collection and accessories. Sri Devi Textiles — Traditional & Modern Collection.">
   <link rel="icon" href="assets/logo.png" type="image/png">
+  <link rel="preload" as="image" href="assets/hero-banner-1.png" fetchpriority="high">
   <link rel="stylesheet" href="style.css">
   <script src="https://checkout.razorpay.com/v1/checkout.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js" defer></script>
@@ -426,7 +427,7 @@
     <div class="container checkout-page">
       <h1 style="font-size:2rem;margin-bottom:32px;color:var(--dark);">Checkout</h1>
       <div class="checkout-layout">
-        <form class="checkout-form" id="checkout-form">
+        <form class="checkout-form" id="checkout-form" novalidate>
           <h2>Billing Details</h2>
           <div class="form-group">
             <label for="fullname">Full Name *</label>
@@ -452,9 +453,13 @@
               <input type="text" id="city" name="city" required placeholder="City">
             </div>
             <div class="form-group">
-              <label for="pincode">Pincode *</label>
-              <input type="text" id="pincode" name="pincode" required pattern="[0-9]{6}" placeholder="6-digit pincode">
+              <label for="state">State *</label>
+              <input type="text" id="state" name="state" required placeholder="State">
             </div>
+          </div>
+          <div class="form-group">
+            <label for="pincode">Pincode *</label>
+            <input type="text" id="pincode" name="pincode" required pattern="[0-9]{6}" placeholder="6-digit pincode">
           </div>
         </form>
 
@@ -585,7 +590,7 @@
             <p>Mon – Sat: 10:00 AM – 8:00 PM<br>Sunday: 11:00 AM – 6:00 PM</p>
           </div>
         </div>
-        <form id="contact-form">
+        <form id="contact-form" novalidate>
           <div class="form-group">
             <label>Name *</label>
             <input type="text" name="name" required placeholder="Your name">
@@ -718,12 +723,12 @@
   <script src="firebase.js"></script>
   <script src="script.js"></script>
   <script>
-    window.addEventListener('load', () => {
-      document.getElementById('page-loader').classList.add('hidden');
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('page-loader')?.classList.add('hidden');
     });
     window.addEventListener('scroll', () => {
-      document.getElementById('site-header').classList.toggle('scrolled', window.scrollY > 20);
-    });
+      document.getElementById('site-header')?.classList.toggle('scrolled', window.scrollY > 20);
+    }, { passive: true });
   </script>
 </body>
 </html>
