@@ -335,8 +335,18 @@ function migrateData() {
   }
 
   if (ver < '5') {
-    const nonWomen = products.filter(p => p.category !== 'Women');
-    products = [...buildWomenProductCatalog(), ...nonWomen];
+    const catalog = buildWomenProductCatalog();
+    const existingWomenSig = products.filter(p => {
+      const cat = normalizeCategory(p.category);
+      return cat === 'women' || cat === 'signature';
+    });
+    const nonWomenSig = products.filter(p => {
+      const cat = normalizeCategory(p.category);
+      return cat !== 'women' && cat !== 'signature';
+    });
+    const existingNames = new Set(existingWomenSig.map(p => p.name.toLowerCase().trim()));
+    const toAdd = catalog.filter(c => !existingNames.has(c.name.toLowerCase().trim()));
+    products = [...existingWomenSig, ...toAdd, ...nonWomenSig];
     seedWomenReviews();
     localStorage.setItem('sd_data_version', '5');
   }
@@ -360,6 +370,10 @@ function migrateData() {
 
 async function migrateDataAsync() {
   const verBefore = localStorage.getItem('sd_data_version') || '1';
+  if (verBefore === '1' && getProducts().length > 0) {
+    localStorage.setItem('sd_data_version', '6');
+    return;
+  }
   const products = migrateData();
   const verAfter = localStorage.getItem('sd_data_version') || '1';
   if (verBefore !== verAfter) {
@@ -444,6 +458,191 @@ function calcDiscount(price, offerPrice) {
   if (!offerPrice || offerPrice >= price) return 0;
   return Math.round(((price - offerPrice) / price) * 100);
 }
+
+/* ── Form Validation (Contact + Checkout) ── */
+const FormValidator = {
+  NAME_RE: /^[A-Za-z]+(?:[ .'][A-Za-z]+)*$/,
+  EMAIL_RE: /^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
+  CITY_RE: /^[A-Za-z]+(?: [A-Za-z]+)*$/,
+  ADDRESS_RE: /^[A-Za-z0-9\s,./-]+$/,
+
+  ensureFeedback(input) {
+    const group = input.closest('.form-group');
+    if (!group) return null;
+    let msg = group.querySelector('.field-feedback');
+    if (!msg) {
+      msg = document.createElement('span');
+      msg.className = 'field-feedback';
+      msg.setAttribute('role', 'alert');
+      msg.setAttribute('aria-live', 'polite');
+      input.after(msg);
+    }
+    return { group, msg };
+  },
+
+  setFieldState(input, valid, message, successMessage) {
+    const fb = this.ensureFeedback(input);
+    if (!fb) return valid;
+    const { group, msg } = fb;
+    group.classList.remove('has-error', 'has-success');
+    input.classList.remove('input-error', 'input-success');
+    input.removeAttribute('aria-invalid');
+    if (valid === null) {
+      msg.textContent = '';
+      msg.className = 'field-feedback';
+      return true;
+    }
+    if (valid) {
+      group.classList.add('has-success');
+      input.classList.add('input-success');
+      msg.className = 'field-feedback field-success';
+      msg.textContent = successMessage || '';
+    } else {
+      group.classList.add('has-error');
+      input.classList.add('input-error');
+      input.setAttribute('aria-invalid', 'true');
+      msg.className = 'field-feedback field-error';
+      msg.textContent = message || '';
+    }
+    return valid;
+  },
+
+  validateName(value, required = true) {
+    const v = (value || '').trim();
+    if (!v) return required ? { valid: false, msg: 'Please enter your full name.' } : { valid: true };
+    if (v.length < 3 || v.length > 60) return { valid: false, msg: 'Please enter a valid full name.' };
+    if (!this.NAME_RE.test(v)) return { valid: false, msg: 'Please enter a valid full name.' };
+    return { valid: true, success: '✓ Valid Name' };
+  },
+
+  validateEmail(value, required = true) {
+    const v = (value || '').trim();
+    if (!v) return required ? { valid: false, msg: 'Please enter a valid email address.' } : { valid: true };
+    if (/\s/.test(v) || !this.EMAIL_RE.test(v)) return { valid: false, msg: 'Please enter a valid email address.' };
+    return { valid: true, success: '✓ Valid Email' };
+  },
+
+  validatePhone(value, required = false) {
+    const v = (value || '').trim();
+    if (!v) return required ? { valid: false, msg: 'Please enter a valid 10-digit mobile number.' } : { valid: true };
+    if (!/^\d{10}$/.test(v)) return { valid: false, msg: 'Enter a valid 10-digit mobile number.' };
+    return { valid: true, success: '✓ Valid Mobile' };
+  },
+
+  validateMessage(value) {
+    const v = (value || '').trim();
+    if (!v) return { valid: false, msg: 'Please enter your message.' };
+    if (v.length < 10 || v.length > 1000) return { valid: false, msg: 'Please enter your message.' };
+    if (!/[A-Za-z]/.test(v)) return { valid: false, msg: 'Please enter your message.' };
+    return { valid: true, success: '✓ Valid Message' };
+  },
+
+  validateAddress(value) {
+    const v = (value || '').trim();
+    if (!v) return { valid: false, msg: 'Please enter your address.' };
+    if (v.length < 10 || v.length > 250) return { valid: false, msg: 'Please enter your address.' };
+    if (!this.ADDRESS_RE.test(v)) return { valid: false, msg: 'Please enter your address.' };
+    return { valid: true, success: '✓ Valid Address' };
+  },
+
+  validateCity(value) {
+    const v = (value || '').trim();
+    if (!v) return { valid: false, msg: 'Please enter a valid city.' };
+    if (v.length < 2 || v.length > 50) return { valid: false, msg: 'Please enter a valid city.' };
+    if (!this.CITY_RE.test(v)) return { valid: false, msg: 'Please enter a valid city.' };
+    return { valid: true, success: '✓ Valid City' };
+  },
+
+  validateState(value) {
+    const v = (value || '').trim();
+    if (!v) return { valid: false, msg: 'Please enter a valid state.' };
+    if (v.length < 2 || v.length > 50) return { valid: false, msg: 'Please enter a valid state.' };
+    if (!this.CITY_RE.test(v)) return { valid: false, msg: 'Please enter a valid state.' };
+    return { valid: true, success: '✓ Valid State' };
+  },
+
+  validatePincode(value) {
+    const v = (value || '').trim();
+    if (!/^\d{6}$/.test(v)) return { valid: false, msg: 'Please enter a valid 6-digit pincode.' };
+    return { valid: true, success: '✓ Valid Pincode' };
+  },
+
+  filterNameInput(input) {
+    input.value = input.value.replace(/[^A-Za-z .']/g, '');
+  },
+
+  filterDigits(input, maxLen) {
+    input.value = input.value.replace(/\D/g, '').slice(0, maxLen);
+  },
+
+  bindField(input, validatorFn, opts = {}) {
+    const validate = () => {
+      const r = validatorFn(input.value);
+      this.setFieldState(input, r.valid, r.msg, r.success);
+      return r.valid;
+    };
+    if (opts.filter === 'name') {
+      input.addEventListener('input', () => { this.filterNameInput(input); validate(); });
+    } else if (opts.filter === 'phone') {
+      input.addEventListener('input', () => { this.filterDigits(input, 10); validate(); });
+    } else if (opts.filter === 'pincode') {
+      input.addEventListener('input', () => { this.filterDigits(input, 6); validate(); });
+    } else if (opts.filter === 'city' || opts.filter === 'state') {
+      input.addEventListener('input', () => {
+        input.value = input.value.replace(/[^A-Za-z ]/g, '');
+        validate();
+      });
+    } else {
+      input.addEventListener('input', validate);
+    }
+    input.addEventListener('blur', validate);
+    return validate;
+  },
+
+  initContactForm(formId) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    form.setAttribute('novalidate', 'novalidate');
+    const name = form.querySelector('[name="name"]');
+    const email = form.querySelector('[name="email"]');
+    const phone = form.querySelector('[name="phone"]');
+    const message = form.querySelector('[name="message"]');
+    const validators = [];
+    if (name) validators.push(this.bindField(name, v => this.validateName(v), { filter: 'name' }));
+    if (email) validators.push(this.bindField(email, v => this.validateEmail(v)));
+    if (phone) validators.push(this.bindField(phone, v => this.validatePhone(v, false), { filter: 'phone' }));
+    if (message) validators.push(this.bindField(message, v => this.validateMessage(v)));
+    form._sdValidators = validators;
+  },
+
+  initCheckoutForm(formId) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    form.setAttribute('novalidate', 'novalidate');
+    const fields = {
+      fullname: { fn: v => this.validateName(v), filter: 'name' },
+      phone: { fn: v => this.validatePhone(v, true), filter: 'phone' },
+      email: { fn: v => this.validateEmail(v) },
+      address: { fn: v => this.validateAddress(v) },
+      city: { fn: v => this.validateCity(v), filter: 'city' },
+      state: { fn: v => this.validateState(v), filter: 'state' },
+      pincode: { fn: v => this.validatePincode(v), filter: 'pincode' }
+    };
+    const validators = [];
+    Object.entries(fields).forEach(([name, cfg]) => {
+      const input = form.querySelector(`[name="${name}"]`);
+      if (input) validators.push(this.bindField(input, cfg.fn, { filter: cfg.filter }));
+    });
+    form._sdValidators = validators;
+  },
+
+  validateForm(form) {
+    if (!form?._sdValidators?.length) return true;
+    let ok = true;
+    form._sdValidators.forEach(fn => { if (!fn()) ok = false; });
+    return ok;
+  }
+};
 
 /* ── Enhancement Constants ── */
 const IMAGE_FALLBACK = 'assets/logo.png';
@@ -572,8 +771,50 @@ function sareeImagesForColor(baseIdx, colorIdx) {
   ];
 }
 
+function productSlugId(name, category) {
+  const slug = `${normalizeCategory(category)}-${name}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return `PRD-${slug.slice(0, 44)}`;
+}
+
+function productDedupeKey(p) {
+  const np = normalizeProduct(p);
+  const img = np.mainImage || np.images?.[0] || '';
+  return `${(np.name || '').toLowerCase().trim()}|${normalizeCategory(np.category)}|${img}`;
+}
+
+function dedupeProducts(products) {
+  const byKey = new Map();
+  products.map(p => normalizeProduct(p)).forEach(p => {
+    const key = productDedupeKey(p);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, p);
+      return;
+    }
+    const pick = (a, b) => {
+      const aStable = a.id && /^PRD-[a-z]/.test(a.id) && !/^PRD-\d/.test(a.id);
+      const bStable = b.id && /^PRD-[a-z]/.test(b.id) && !/^PRD-\d/.test(b.id);
+      if (aStable && !bStable) return a;
+      if (!aStable && bStable) return b;
+      return (a.createdAt || 0) <= (b.createdAt || 0) ? a : b;
+    };
+    byKey.set(key, pick(existing, p));
+  });
+  const seenIds = new Set();
+  return [...byKey.values()].filter(p => {
+    if (seenIds.has(p.id)) return false;
+    seenIds.add(p.id);
+    return true;
+  });
+}
+
+function findDuplicateProduct(product) {
+  const key = productDedupeKey(product);
+  return getProducts().find(p => p.id !== product.id && productDedupeKey(p) === key);
+}
+
 function makeWomenProduct(def) {
-  const id = def.keepId || sdGenerateId('PRD');
+  const id = def.keepId || productSlugId(def.name, def.signature ? 'signature' : 'women');
   const colors = def.colors;
   const sizes = def.sizes || getSizesForProduct({ category: def.signature ? 'signature' : 'women', name: def.name });
   const variants = colors.map((color, i) => ({
@@ -1122,7 +1363,10 @@ async function seedInitialData() {
     address: '123 Silk Market, T. Nagar, Chennai - 600017'
   });
   localStorage.setItem(SD_KEYS.initialized, 'true');
-  localStorage.setItem('sd_data_version', '3');
+  const currentVer = localStorage.getItem('sd_data_version');
+  if (!currentVer || Number(currentVer) < 6) {
+    localStorage.setItem('sd_data_version', '6');
+  }
 }
 
 /* ── Product store (Firestore + in-memory cache) ── */
@@ -1164,6 +1408,14 @@ async function initProductStore() {
 
   await seedInitialData();
   await migrateDataAsync();
+
+  const deduped = dedupeProducts(getProducts());
+  if (deduped.length !== getProducts().length) {
+    await saveProducts(deduped);
+  } else if (window.sdFirestore) {
+    await cleanupFirestoreOrphanProducts(deduped);
+  }
+
   subscribeProductUpdates();
 }
 
@@ -1171,7 +1423,13 @@ function subscribeProductUpdates() {
   if (!window.sdFirestore || window._sdProductUnsub) return;
   window._sdProductUnsub = getFirestoreProductsCollection().onSnapshot(
     (snap) => {
-      productsCache = snap.docs.map(doc => normalizeProduct({ ...doc.data(), id: doc.id }));
+      const loaded = snap.docs.map(doc => normalizeProduct({ ...doc.data(), id: doc.id }));
+      const deduped = dedupeProducts(loaded);
+      productsCache = deduped;
+      if (deduped.length < loaded.length && !window._sdDedupeCleanupDone) {
+        window._sdDedupeCleanupDone = true;
+        saveProducts(deduped).catch(err => console.warn('[Sri Devi] Duplicate cleanup:', err));
+      }
       notifyProductsUpdated();
     },
     (err) => console.warn('[Sri Devi] Product realtime sync error:', err)
@@ -1186,8 +1444,23 @@ function getProductById(id) {
   return getProducts().find(p => p.id === id);
 }
 
+async function cleanupFirestoreOrphanProducts(validProducts) {
+  if (!window.sdFirestore) return;
+  const col = getFirestoreProductsCollection();
+  const validIds = new Set(validProducts.map(p => p.id));
+  const snap = await col.get();
+  const orphans = snap.docs.filter(d => !validIds.has(d.id));
+  if (!orphans.length) return;
+  const CHUNK = 400;
+  for (let i = 0; i < orphans.length; i += CHUNK) {
+    const batch = window.sdFirestore.batch();
+    orphans.slice(i, i + CHUNK).forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
 async function saveProducts(products) {
-  const normalized = products.map(p => normalizeProduct(p));
+  const normalized = dedupeProducts(products.map(p => normalizeProduct(p)));
   productsCache = normalized;
 
   if (!window.sdFirestore) {
@@ -1202,17 +1475,25 @@ async function saveProducts(products) {
     const slice = normalized.slice(i, i + CHUNK);
     const chunkBatch = window.sdFirestore.batch();
     slice.forEach(p => {
-      const id = p.id || sdGenerateId('PRD');
+      const id = p.id || productSlugId(p.name, p.category);
       chunkBatch.set(col.doc(id), serializeProductForFirestore({ ...p, id }));
     });
     await chunkBatch.commit();
   }
+  await cleanupFirestoreOrphanProducts(normalized);
   notifyProductsUpdated();
   return normalized;
 }
 
 async function addProduct(product) {
-  const id = product.id || sdGenerateId('PRD');
+  const normalized = normalizeProduct(product);
+  const duplicate = findDuplicateProduct(normalized);
+  if (duplicate) {
+    const err = new Error('DUPLICATE_PRODUCT');
+    err.existingId = duplicate.id;
+    throw err;
+  }
+  const id = product.id || productSlugId(normalized.name, normalized.category);
   const newProduct = normalizeProduct({ ...product, id, createdAt: product.createdAt || Date.now() });
   productsCache.unshift(newProduct);
 
@@ -1867,6 +2148,9 @@ const UserApp = {
     initScrollReveal();
     initImageFallbacks();
 
+    FormValidator.initContactForm('contact-form');
+    FormValidator.initCheckoutForm('checkout-form');
+
     window.addEventListener('hashchange', () => this.handleRoute());
     window.addEventListener('sd-storage-update', () => this.refreshCurrentView());
     window.addEventListener('storage', (e) => {
@@ -2101,6 +2385,7 @@ const UserApp = {
 
     document.getElementById('contact-form')?.addEventListener('submit', (e) => {
       e.preventDefault();
+      if (!FormValidator.validateForm(e.target)) return;
       this.handleContactSubmit(e.target);
     });
 
@@ -2511,21 +2796,19 @@ const UserApp = {
 
   handlePlaceOrder() {
     const form = document.getElementById('checkout-form');
-    if (!form || !form.checkValidity()) {
-      if (form) form.reportValidity();
-      return;
-    }
+    if (!form || !FormValidator.validateForm(form)) return;
 
     const items = CartManager.getItems();
     const { subtotal, shipping, total } = calculateCart(items);
     const paymentMethod = document.querySelector('input[name="payment"]:checked')?.value || 'upi';
     const orderData = {
-      name: form.fullname.value,
-      phone: form.phone.value,
-      email: form.email.value,
-      address: form.address.value,
-      city: form.city.value,
-      pincode: form.pincode.value,
+      name: form.fullname.value.trim(),
+      phone: form.phone.value.trim(),
+      email: form.email.value.trim(),
+      address: form.address.value.trim(),
+      city: form.city.value.trim(),
+      state: form.state.value.trim(),
+      pincode: form.pincode.value.trim(),
       paymentMethod,
       items: items.map(i => ({ ...i, product: getProductById(i.productId) })),
       subtotal,
@@ -2611,6 +2894,9 @@ const UserApp = {
     sendEmailJS(data, () => {
       showToast('Message sent successfully!');
       form.reset();
+      form.querySelectorAll('.form-group').forEach(g => g.classList.remove('has-error', 'has-success'));
+      form.querySelectorAll('.field-feedback').forEach(m => { m.textContent = ''; });
+      form.querySelectorAll('input, textarea').forEach(i => i.classList.remove('input-error', 'input-success'));
     }, () => showToast('Failed to send. Try again.', 'error'));
   },
 
@@ -2821,7 +3107,11 @@ const AdminApp = {
         await this.saveProductForm(e.target);
       } catch (err) {
         console.error(err);
-        showToast('Failed to save product', 'error');
+        if (err.message === 'DUPLICATE_PRODUCT') {
+          showToast('A product with this name already exists in this category', 'error');
+        } else {
+          showToast('Failed to save product', 'error');
+        }
       }
     });
 
@@ -3131,7 +3421,7 @@ const AdminApp = {
       ? orders.map(o => `
         <tr>
           <td>${o.id}</td>
-          <td>${o.name}</td>
+          <td>${o.name}${o.city || o.state ? `<br><small style="color:var(--text-light);font-size:0.85em">${[o.city, o.state].filter(Boolean).join(', ')}</small>` : ''}</td>
           <td>${o.email || '—'}</td>
           <td>${o.items?.length || 1} items</td>
           <td>${formatCurrency(o.total)}</td>
