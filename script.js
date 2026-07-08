@@ -1151,27 +1151,6 @@ function getAnalytics(rangeKey, customStart, customEnd) {
   };
 }
 
-function compressImage(file, maxW = 800) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let w = img.width, h = img.height;
-        if (w > maxW) { h = (h * maxW) / w; w = maxW; }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
-      };
-      img.onerror = reject;
-      img.src = e.target.result;
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
 function initDateFilter(onChange) {
   const btn = document.getElementById('date-filter-btn');
   const dropdown = document.getElementById('date-filter-dropdown');
@@ -1820,12 +1799,17 @@ function deleteReview(id) {
 
 /* ── Admin Session ── */
 function isAdminLoggedIn() {
-  return sdGet(SD_KEYS.session, null)?.loggedIn === true;
+  const session = sdGet(SD_KEYS.session, null);
+  return session?.loggedIn === true && !!session?.loginAt;
 }
 
 function adminLogin(username, password) {
-  if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
-    sdSet(SD_KEYS.session, { loggedIn: true, loginAt: Date.now() });
+  const user = (username || '').trim();
+  const pass = password || '';
+  if (!user || !pass) return false;
+  if (user === ADMIN_CREDENTIALS.username && pass === ADMIN_CREDENTIALS.password) {
+    sdSet(SD_KEYS.session, { loggedIn: true, loginAt: Date.now(), username: user });
+    document.documentElement.classList.remove('sd-admin-locked');
     return true;
   }
   return false;
@@ -1833,6 +1817,7 @@ function adminLogin(username, password) {
 
 function adminLogout() {
   localStorage.removeItem(SD_KEYS.session);
+  document.documentElement.classList.add('sd-admin-locked');
 }
 
 /* ── Dashboard Stats ── */
@@ -3011,12 +2996,13 @@ const AdminApp = {
 
   init() {
     if (!document.body.classList.contains('admin-site')) return;
+    this.showLogin();
     this.bindEvents();
     initDateFilter((key, start, end) => {
       this.dateFilter = key;
       this.customStart = start;
       this.customEnd = end;
-      this.refreshView();
+      if (isAdminLoggedIn()) this.refreshView();
     });
 
     if (isAdminLoggedIn()) {
@@ -3036,8 +3022,22 @@ const AdminApp = {
   bindEvents() {
     document.getElementById('login-form')?.addEventListener('submit', (e) => {
       e.preventDefault();
-      const user = e.target.username.value;
+      const errEl = document.getElementById('login-error');
+      if (errEl) errEl.textContent = '';
+      const user = e.target.username.value.trim();
       const pass = e.target.password.value;
+      if (!user && !pass) {
+        if (errEl) errEl.textContent = 'Username and password are required';
+        return;
+      }
+      if (!user) {
+        if (errEl) errEl.textContent = 'Invalid username';
+        return;
+      }
+      if (!pass) {
+        if (errEl) errEl.textContent = 'Invalid password';
+        return;
+      }
       if (adminLogin(user, pass)) {
         if (e.target.remember?.checked) localStorage.setItem('sd_remember_admin', user);
         else localStorage.removeItem('sd_remember_admin');
@@ -3045,7 +3045,7 @@ const AdminApp = {
         this.showDashboard();
       } else {
         showToast('Invalid credentials', 'error');
-        document.getElementById('login-error').textContent = 'Invalid username or password';
+        if (errEl) errEl.textContent = 'Invalid username or password';
       }
     });
 
@@ -3071,13 +3071,19 @@ const AdminApp = {
 
     document.querySelectorAll('[data-admin-nav]').forEach(btn => {
       btn.addEventListener('click', () => {
-        if (btn.disabled) return;
+        if (btn.disabled || !isAdminLoggedIn()) {
+          this.showLogin();
+          return;
+        }
         this.currentView = btn.dataset.adminNav;
         this.switchView();
       });
     });
 
-    document.getElementById('product-image-upload')?.addEventListener('change', (e) => this.handleImageUpload(e));
+    document.querySelector('#product-form [name="images"]')?.addEventListener('input', (e) => {
+      this.previewProductImages(e.target.value.split('\n').map(s => s.trim()).filter(Boolean));
+    });
+
     document.getElementById('add-variant-btn')?.addEventListener('click', () => this.addVariantRow());
 
     document.getElementById('product-search')?.addEventListener('input', (e) => {
@@ -3097,12 +3103,14 @@ const AdminApp = {
     });
 
     document.getElementById('add-product-btn')?.addEventListener('click', () => {
+      if (!isAdminLoggedIn()) { this.showLogin(); return; }
       this.editingProductId = null;
       this.openProductModal();
     });
 
     document.getElementById('product-form')?.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (!isAdminLoggedIn()) { this.showLogin(); return; }
       try {
         await this.saveProductForm(e.target);
       } catch (err) {
@@ -3156,17 +3164,29 @@ const AdminApp = {
   },
 
   showLogin() {
-    document.getElementById('admin-login').classList.remove('hidden');
-    document.getElementById('admin-panel').classList.add('hidden');
+    document.documentElement.classList.add('sd-admin-locked');
+    document.getElementById('admin-login')?.classList.remove('hidden');
+    document.getElementById('admin-panel')?.classList.add('hidden');
+    const errEl = document.getElementById('login-error');
+    if (errEl) errEl.textContent = '';
   },
 
   showDashboard() {
-    document.getElementById('admin-login').classList.add('hidden');
-    document.getElementById('admin-panel').classList.remove('hidden');
+    if (!isAdminLoggedIn()) {
+      this.showLogin();
+      return;
+    }
+    document.documentElement.classList.remove('sd-admin-locked');
+    document.getElementById('admin-login')?.classList.add('hidden');
+    document.getElementById('admin-panel')?.classList.remove('hidden');
     this.switchView();
   },
 
   switchView() {
+    if (!isAdminLoggedIn()) {
+      this.showLogin();
+      return;
+    }
     document.querySelectorAll('.admin-view').forEach(v => v.classList.remove('active'));
     document.getElementById(`view-${this.currentView}`)?.classList.add('active');
     document.querySelectorAll('[data-admin-nav]').forEach(n => {
@@ -3198,7 +3218,10 @@ const AdminApp = {
   },
 
   refreshView() {
-    if (!isAdminLoggedIn()) return;
+    if (!isAdminLoggedIn()) {
+      this.showLogin();
+      return;
+    }
     this.switchView();
   },
 
@@ -3554,8 +3577,7 @@ const AdminApp = {
           <button type="button" class="btn-icon remove-variant" data-vi="${vi}">🗑</button>
         </div>
         <div class="variant-images" id="variant-imgs-${vi}">${v.images.map((img, j) => `<div class="img-preview-item"><img src="${img}"><button type="button" class="remove-vimg" data-vi="${vi}" data-ji="${j}">✕</button></div>`).join('')}</div>
-        <input type="file" accept="image/*" class="variant-file-input" data-vi="${vi}">
-        <textarea class="variant-url-input" rows="2" placeholder="Or paste image URLs" data-vi="${vi}">${v.images.filter(i => !i.startsWith('data:')).join('\n')}</textarea>
+        <textarea class="variant-url-input" rows="2" placeholder="Paste image URLs (one per line)" data-vi="${vi}">${v.images.filter(i => !i.startsWith('data:')).join('\n')}</textarea>
         <div class="variant-sizes">${v.sizes.map((sz, si) => `
           <div class="size-row"><input value="${sz.size}" data-vi="${vi}" data-si="${si}" class="sz-name" placeholder="Size">
           <input type="number" value="${sz.stock}" class="sz-stock" data-vi="${vi}" data-si="${si}" placeholder="Stock">
@@ -3564,9 +3586,6 @@ const AdminApp = {
         </div>
       </div>`).join('');
 
-    container.querySelectorAll('.variant-file-input').forEach(inp => {
-      inp.onchange = e => this.handleVariantImageUpload(e, Number(inp.dataset.vi));
-    });
     container.querySelectorAll('.remove-variant').forEach(btn => {
       btn.onclick = () => { this.variantDraft.splice(Number(btn.dataset.vi), 1); this.renderVariantEditor(); };
     });
@@ -3583,34 +3602,6 @@ const AdminApp = {
         this.renderVariantEditor();
       };
     });
-  },
-
-  async handleVariantImageUpload(e, vi) {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    const newImages = [];
-    for (const file of files) {
-      try {
-        newImages.push(await compressImage(file));
-      } catch {
-        showToast('Image upload failed', 'error');
-        return;
-      }
-    }
-    this.variantDraft[vi].images = newImages;
-    e.target.value = '';
-    this.renderVariantEditor();
-  },
-
-  async handleImageUpload(e) {
-    const files = Array.from(e.target.files || []);
-    const urls = [];
-    for (const file of files) {
-      urls.push(await compressImage(file));
-    }
-    const ta = document.getElementById('product-form')?.images;
-    if (ta) ta.value = (ta.value ? ta.value + '\n' : '') + urls.join('\n');
-    this.previewProductImages(ta.value.split('\n').filter(Boolean));
   },
 
   collectVariantsFromEditor() {
