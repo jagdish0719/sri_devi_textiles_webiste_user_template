@@ -46,6 +46,10 @@ input, select, textarea { font-family: inherit; font-size: 1rem; }
 
 .hidden { display: none !important; }
 
+html.sd-admin-locked #admin-panel {
+  display: none !important;
+}
+
 /* ── Loading ── */
 .page-loader {
   position: fixed;
